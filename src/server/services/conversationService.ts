@@ -10,6 +10,10 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { ProviderService } from './providerService.js'
+import {
+  OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
+  OPENAI_OAUTH_PROVIDER_ENV_KEY,
+} from './openaiOfficialProvider.js'
 import { sessionService } from './sessionService.js'
 import { diagnosticsService } from './diagnosticsService.js'
 import {
@@ -888,6 +892,8 @@ export class ConversationService {
       'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
       'CLAUDE_CODE_ATTRIBUTION_HEADER',
       'CLAUDE_CODE_MODEL_CONTEXT_WINDOWS',
+      OPENAI_OAUTH_PROVIDER_ENV_KEY,
+      OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
     ] as const
 
     const cleanEnv = await getProcessEnvWithTerminalShellEnvironment()
@@ -1044,6 +1050,8 @@ export class ConversationService {
         'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
         'CLAUDE_CODE_ATTRIBUTION_HEADER',
         'CLAUDE_CODE_MODEL_CONTEXT_WINDOWS',
+        OPENAI_OAUTH_PROVIDER_ENV_KEY,
+        OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
       ].some((key) => typeof env[key] === 'string' && env[key]!.trim().length > 0)
     } catch {
       return false
@@ -1074,6 +1082,9 @@ export class ConversationService {
       const raw = fs.readFileSync(settingsPath, 'utf-8')
       const parsed = JSON.parse(raw) as { env?: Record<string, string> }
       const env = parsed.env ?? {}
+      if (env[OPENAI_OAUTH_PROVIDER_ENV_KEY] === '1') {
+        return false
+      }
       const hasProviderEnv = [
         'ANTHROPIC_API_KEY',
         'ANTHROPIC_AUTH_TOKEN',

@@ -6,8 +6,11 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
+import { createServer } from 'net'
 import { handleHahaOpenAIOAuthApi } from '../api/haha-openai-oauth.js'
 import { hahaOpenAIOAuthService } from '../services/hahaOpenAIOAuthService.js'
+import { startServer } from '../index.js'
+import { ProviderService } from '../services/providerService.js'
 
 let tmpDir: string
 let originalConfigDir: string | undefined
@@ -42,6 +45,22 @@ function buildReq(
   })
   const segments = url.pathname.split('/').filter(Boolean)
   return { req, url, segments }
+}
+
+async function getFreePort(): Promise<number> {
+  return await new Promise((resolve, reject) => {
+    const server = createServer()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('Failed to allocate test port')))
+        return
+      }
+      const port = address.port
+      server.close(() => resolve(port))
+    })
+  })
 }
 
 describe('POST /api/haha-openai-oauth/start', () => {
@@ -155,5 +174,26 @@ describe('DELETE /api/haha-openai-oauth', () => {
     const res = await handleHahaOpenAIOAuthApi(req, url, segments)
     expect(res.status).toBe(200)
     expect(await hahaOpenAIOAuthService.loadTokens()).toBeNull()
+  })
+})
+
+describe('GET /auth/callback', () => {
+  beforeEach(setup)
+  afterEach(teardown)
+
+  test('routes the OpenAI Codex redirect path to the desktop callback page', async () => {
+    const port = await getFreePort()
+    const originalServerPort = ProviderService.getServerPort()
+    const server = startServer(port, '127.0.0.1')
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/auth/callback`)
+      expect(res.status).toBe(200)
+      const html = await res.text()
+      expect(html).toContain('OpenAI Login Failed')
+      expect(html).toContain('Missing code or state parameter')
+    } finally {
+      server.stop(true)
+      ProviderService.setServerPort(originalServerPort)
+    }
   })
 })

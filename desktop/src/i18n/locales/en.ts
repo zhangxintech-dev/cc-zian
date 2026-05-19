@@ -273,12 +273,27 @@ export const en = {
   'settings.claudeOfficialLogin.errorPrefix': 'Error: ',
   'settings.claudeOfficialLogin.openBrowserFailed': 'Failed to open browser; please visit the authorization URL manually.',
 
+  // Settings > ChatGPT Official Login
+  'settings.chatgptOfficialLogin.intro': 'Sign in with ChatGPT to use GPT models from desktop sessions.',
+  'settings.chatgptOfficialLogin.loginButton': 'Sign in with ChatGPT',
+  'settings.chatgptOfficialLogin.loginStarting': 'Starting sign-in...',
+  'settings.chatgptOfficialLogin.logoutButton': 'Sign out',
+  'settings.chatgptOfficialLogin.logoutProcessing': 'Signing out...',
+  'settings.chatgptOfficialLogin.loggedInPrefix': 'Signed in as',
+  'settings.chatgptOfficialLogin.accountUnknown': 'ChatGPT account',
+  'settings.chatgptOfficialLogin.openBrowserFailed': 'Unable to open browser. Copy the authorization link and open it manually.',
+  'settings.chatgptOfficialLogin.copyAuthorizeUrl': 'Copy authorization link',
+  'settings.chatgptOfficialLogin.copyLinkFailed': 'Unable to copy authorization link.',
+  'settings.chatgptOfficialLogin.errorPrefix': 'ChatGPT OAuth error: ',
+
   // Settings > Providers
   'settings.providers.title': 'Providers',
   'settings.providers.description': 'Manage API providers for model access.',
   'settings.providers.addProvider': 'Add Provider',
   'settings.providers.officialName': 'Claude Official',
   'settings.providers.officialDesc': 'Anthropic native — no API key required',
+  'settings.providers.openaiOfficialName': 'ChatGPT Official',
+  'settings.providers.openaiOfficialDesc': 'OpenAI OAuth via your ChatGPT account — no API key required',
   'settings.providers.connected': 'Connected ({latency}ms)',
   'settings.providers.failed': 'Failed: {error}',
   'settings.providers.connectivityOk': '① Connectivity ({latency}ms)',

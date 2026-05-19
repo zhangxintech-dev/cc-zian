@@ -24,6 +24,14 @@ import {
   attributionHeaderEnvForModel,
 } from './attributionHeaderPolicy.js'
 import {
+  OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
+  OPENAI_OFFICIAL_PROVIDER,
+  OPENAI_OAUTH_PROVIDER_ENV_KEY,
+  buildOpenAIOfficialRuntimeEnv,
+  isOpenAIOfficialProviderId,
+} from './openaiOfficialProvider.js'
+import { hahaOpenAIOAuthService } from './hahaOpenAIOAuthService.js'
+import {
   CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
   ensurePersistentStorageUpgraded,
 } from './persistentStorageMigrations.js'
@@ -53,6 +61,8 @@ const MANAGED_ENV_KEYS = [
   'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
   ATTRIBUTION_HEADER_ENV_KEY,
   MODEL_CONTEXT_WINDOWS_ENV_KEY,
+  OPENAI_OAUTH_PROVIDER_ENV_KEY,
+  OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
 ] as const
 
 const CUSTOM_PROVIDER_MODEL_CAPABILITIES = 'thinking,effort,adaptive_thinking,max_effort'
@@ -80,12 +90,18 @@ function isProviderModels(value: unknown): value is SavedProvider['models'] {
 
 function isSavedProvider(value: unknown): value is SavedProvider {
   if (!isRecord(value)) return false
+  const runtimeKind = value.runtimeKind
   return (
     typeof value.id === 'string' &&
     typeof value.presetId === 'string' &&
     typeof value.name === 'string' &&
     typeof value.apiKey === 'string' &&
     typeof value.baseUrl === 'string' &&
+    (
+      runtimeKind === undefined ||
+      runtimeKind === 'anthropic_compatible' ||
+      runtimeKind === 'openai_oauth'
+    ) &&
     isProviderModels(value.models)
   )
 }
@@ -100,20 +116,34 @@ function normalizeModelMapping(models: SavedProvider['models']): SavedProvider['
   }
 }
 
+function normalizeSavedProvider(provider: SavedProvider): SavedProvider {
+  return {
+    ...provider,
+    apiFormat: provider.apiFormat ?? 'anthropic',
+    runtimeKind: provider.runtimeKind ?? 'anthropic_compatible',
+    models: normalizeModelMapping(provider.models),
+  }
+}
+
 function normalizeProvidersIndex(value: unknown): ProvidersIndex | null {
   if (!isRecord(value) || !Array.isArray(value.providers)) {
     return null
   }
 
   const { activeProviderId: _legacyActiveProviderId, ...rest } = value
-  const providers = value.providers.filter(isSavedProvider)
+  const providers = value.providers
+    .filter(isSavedProvider)
+    .map((provider) => normalizeSavedProvider(provider))
   const rawActiveId =
     typeof value.activeId === 'string'
       ? value.activeId
       : typeof _legacyActiveProviderId === 'string'
         ? _legacyActiveProviderId
         : null
-  const activeId = rawActiveId && providers.some((provider) => provider.id === rawActiveId)
+  const activeId = rawActiveId && (
+    providers.some((provider) => provider.id === rawActiveId) ||
+    isOpenAIOfficialProviderId(rawActiveId)
+  )
     ? rawActiveId
     : null
 
@@ -256,6 +286,10 @@ export class ProviderService {
   }
 
   async getProvider(id: string): Promise<SavedProvider> {
+    if (isOpenAIOfficialProviderId(id)) {
+      return OPENAI_OFFICIAL_PROVIDER
+    }
+
     const index = await this.readIndex()
     const provider = index.providers.find((p) => p.id === id)
     if (!provider) throw ApiError.notFound(`Provider not found: ${id}`)
@@ -273,6 +307,7 @@ export class ProviderService {
       ...(input.authStrategy !== undefined && { authStrategy: input.authStrategy }),
       baseUrl: input.baseUrl,
       apiFormat: input.apiFormat ?? 'anthropic',
+      runtimeKind: input.runtimeKind ?? 'anthropic_compatible',
       models: normalizeModelMapping(input.models),
       ...(input.autoCompactWindow !== undefined && { autoCompactWindow: input.autoCompactWindow }),
       ...(input.modelContextWindows !== undefined && { modelContextWindows: input.modelContextWindows }),
@@ -297,6 +332,7 @@ export class ProviderService {
       ...(input.authStrategy !== undefined && { authStrategy: input.authStrategy }),
       ...(input.baseUrl !== undefined && { baseUrl: input.baseUrl }),
       ...(input.apiFormat !== undefined && { apiFormat: input.apiFormat }),
+      ...(input.runtimeKind !== undefined && { runtimeKind: input.runtimeKind }),
       ...(input.models !== undefined && { models: normalizeModelMapping(input.models) }),
       ...(typeof input.autoCompactWindow === 'number' && { autoCompactWindow: input.autoCompactWindow }),
       ...(input.modelContextWindows !== undefined && input.modelContextWindows !== null && { modelContextWindows: input.modelContextWindows }),
@@ -336,13 +372,17 @@ export class ProviderService {
 
   async activateProvider(id: string): Promise<void> {
     const index = await this.readIndex()
-    const provider = index.providers.find((p) => p.id === id)
+    const provider = isOpenAIOfficialProviderId(id)
+      ? OPENAI_OFFICIAL_PROVIDER
+      : index.providers.find((p) => p.id === id)
     if (!provider) throw ApiError.notFound(`Provider not found: ${id}`)
 
     index.activeId = id
     await this.writeIndex(index)
 
-    if (provider.presetId === 'official') {
+    if (provider.runtimeKind === 'openai_oauth') {
+      await this.syncToSettings(provider)
+    } else if (provider.presetId === 'official') {
       await this.clearProviderFromSettings()
     } else {
       await this.syncToSettings(provider)
@@ -362,6 +402,10 @@ export class ProviderService {
     provider: SavedProvider,
     options?: { proxyPath?: string },
   ): Record<string, string> {
+    if (provider.runtimeKind === 'openai_oauth') {
+      return buildOpenAIOfficialRuntimeEnv()
+    }
+
     const needsProxy = provider.apiFormat != null && provider.apiFormat !== 'anthropic'
     const proxyPath = options?.proxyPath ?? '/proxy'
     const baseUrl = needsProxy
@@ -467,12 +511,28 @@ export class ProviderService {
    */
   async checkAuthStatus(): Promise<{
     hasAuth: boolean
-    source: 'cc-haha-provider' | 'original-settings' | 'env' | 'none'
+    source: 'cc-haha-provider' | 'openai-oauth' | 'original-settings' | 'env' | 'none'
     activeProvider?: string
   }> {
     // 1. Check cc-haha active provider
     const index = await this.readIndex()
     if (index.activeId) {
+      if (isOpenAIOfficialProviderId(index.activeId)) {
+        const tokens = await hahaOpenAIOAuthService.ensureFreshTokens()
+        if (tokens?.accessToken && tokens.refreshToken) {
+          return {
+            hasAuth: true,
+            source: 'openai-oauth',
+            activeProvider: OPENAI_OFFICIAL_PROVIDER.name,
+          }
+        }
+        return {
+          hasAuth: false,
+          source: 'none',
+          activeProvider: OPENAI_OFFICIAL_PROVIDER.name,
+        }
+      }
+
       const provider = index.providers.find(p => p.id === index.activeId)
       if (provider) {
         const presetDefaultEnv = getPresetDefaultEnv(provider.presetId)
@@ -513,6 +573,9 @@ export class ProviderService {
     apiFormat: ApiFormat
   } | null> {
     if (providerId) {
+      if (isOpenAIOfficialProviderId(providerId)) {
+        return null
+      }
       const provider = await this.getProvider(providerId)
       return {
         baseUrl: provider.baseUrl,
@@ -523,7 +586,10 @@ export class ProviderService {
 
     const index = await this.readIndex()
     if (!index.activeId) return null
-    const provider = index.providers.find((p) => p.id === index.activeId)
+    if (isOpenAIOfficialProviderId(index.activeId)) {
+      return null
+    }
+    const provider = await this.getProvider(index.activeId).catch(() => null)
     if (!provider) return null
     return {
       baseUrl: provider.baseUrl,
