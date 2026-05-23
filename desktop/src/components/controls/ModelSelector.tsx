@@ -16,6 +16,8 @@ import type { RuntimeSelection } from '../../types/runtime'
 import type { EffortLevel, ModelInfo } from '../../types/settings'
 import { useMobileViewport } from '../../hooks/useMobileViewport'
 import { isTauriRuntime } from '../../lib/desktopRuntime'
+import { useHahaOAuthStore } from '../../stores/hahaOAuthStore'
+import { useHahaOpenAIOAuthStore } from '../../stores/hahaOpenAIOAuthStore'
 import { MobileBottomSheet } from '../shared/MobileBottomSheet'
 
 type ProviderChoice = {
@@ -101,6 +103,8 @@ function buildProviderChoices(
   officialName: string,
   openAIOfficialName: string,
   labels: Record<'main' | 'haiku' | 'sonnet' | 'opus', string>,
+  claudeOfficialLoggedIn: boolean,
+  openAIOfficialLoggedIn: boolean,
 ): ProviderChoice[] {
   const claudeOfficialModels = activeId === null && availableModels.length > 0
     ? availableModels
@@ -109,21 +113,30 @@ function buildProviderChoices(
     ? availableModels
     : OPENAI_OFFICIAL_MODELS
 
-  return [
-    officialChoices(null, claudeOfficialModels, activeId === null, officialName),
-    officialChoices(
+  const choices: ProviderChoice[] = []
+
+  if (claudeOfficialLoggedIn) {
+    choices.push(officialChoices(null, claudeOfficialModels, activeId === null, officialName))
+  }
+  if (openAIOfficialLoggedIn) {
+    choices.push(officialChoices(
       OPENAI_OFFICIAL_PROVIDER_ID,
       openAIOfficialModels,
       activeId === OPENAI_OFFICIAL_PROVIDER_ID,
       openAIOfficialName,
-    ),
-    ...providers.map((provider) => ({
+    ))
+  }
+
+  for (const provider of providers) {
+    choices.push({
       providerId: provider.id,
       providerName: provider.name,
       isDefault: activeId === provider.id,
       models: buildProviderModels(provider, labels),
-    })),
-  ]
+    })
+  }
+
+  return choices
 }
 
 function resolveDefaultRuntimeSelection(
@@ -173,6 +186,10 @@ export function ModelSelector({
     isLoading: providersLoading,
     fetchProviders,
   } = useProviderStore()
+  const claudeOAuthStatus = useHahaOAuthStore((s) => s.status)
+  const fetchClaudeOAuthStatus = useHahaOAuthStore((s) => s.fetchStatus)
+  const openAIOAuthStatus = useHahaOpenAIOAuthStore((s) => s.status)
+  const fetchOpenAIOAuthStatus = useHahaOpenAIOAuthStore((s) => s.fetchStatus)
   const runtimeSelection = useSessionRuntimeStore((state) =>
     runtimeKey ? state.selections[runtimeKey] : undefined,
   )
@@ -199,6 +216,11 @@ export function ModelSelector({
     requestedProvidersRef.current = true
     void fetchProviders()
   }, [fetchProviders, isRuntimeScoped, providersLoading])
+
+  useEffect(() => {
+    void fetchClaudeOAuthStatus()
+    void fetchOpenAIOAuthStatus()
+  }, [fetchClaudeOAuthStatus, fetchOpenAIOAuthStatus])
 
   useEffect(() => {
     if (!open) return
@@ -290,8 +312,10 @@ export function ModelSelector({
       t('settings.providers.officialName'),
       t('settings.providers.openaiOfficialName'),
       roleLabels,
+      claudeOAuthStatus?.loggedIn === true,
+      openAIOAuthStatus?.loggedIn === true,
     ),
-    [activeId, availableModels, providers, roleLabels, t],
+    [activeId, availableModels, providers, roleLabels, t, claudeOAuthStatus, openAIOAuthStatus],
   )
 
   const selectedModel = isControlled
