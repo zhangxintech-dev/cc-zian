@@ -23,6 +23,15 @@ const CONTENT_TYPES: Record<string, string> = {
   woff2: 'font/woff2',
   txt: 'text/plain; charset=utf-8',
   md: 'text/plain; charset=utf-8',
+  // Video — served inline via <video> with HTTP byte-range streaming.
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  m4v: 'video/x-m4v',
+  // Audio.
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
 }
 
 export function contentTypeForPath(filePath: string): string {
@@ -33,7 +42,76 @@ export function contentTypeForPath(filePath: string): string {
 export type ResolveWorkDir = (sessionId: string) => Promise<string | null>
 
 const PREFIX = '/preview-fs/'
-const MAX_FILE_BYTES = 50 * 1024 * 1024
+
+/**
+ * Upper bound on what we'll serve. The old 50 MB cap existed because the file
+ * was buffered into memory via `readFileSync`; that would 413 real dubbed
+ * videos. We now STREAM every response through `Bun.file(...)` (including
+ * byte-ranges), so the in-memory pressure is gone and we can raise this a lot.
+ * We keep a generous-but-finite ceiling (2 GiB) purely as a sanity guard
+ * against pathological / runaway files — not as a memory limit.
+ */
+const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
+
+export interface ParsedRange {
+  start: number
+  end: number
+}
+
+/**
+ * Parse a single HTTP `Range` header against a known file `size`.
+ *
+ * Supports the common single-range forms:
+ *   - `bytes=start-end`  (explicit closed range)
+ *   - `bytes=start-`     (open-ended → to EOF)
+ *   - `bytes=-N`         (suffix → last N bytes)
+ *
+ * Returns inclusive `{ start, end }` byte offsets clamped to `[0, size-1]`,
+ * `null` when the header is absent/unparseable (caller should fall back to a
+ * full 200 response), or `'unsatisfiable'` when the range cannot be satisfied
+ * (caller should reply 416). Multi-range requests (comma-separated) are not
+ * supported and fall back to a full response.
+ */
+export function parseRange(
+  rangeHeader: string | null | undefined,
+  size: number,
+): ParsedRange | null | 'unsatisfiable' {
+  if (!rangeHeader) return null
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim())
+  if (!match) return null
+
+  const startRaw = match[1]
+  const endRaw = match[2]
+
+  // `bytes=-N` suffix form: the last N bytes.
+  if (startRaw === '') {
+    if (endRaw === '') return null // `bytes=-` is malformed → ignore.
+    const suffixLen = Number(endRaw)
+    if (!Number.isFinite(suffixLen) || suffixLen <= 0) return 'unsatisfiable'
+    if (size === 0) return 'unsatisfiable'
+    const start = Math.max(0, size - suffixLen)
+    return { start, end: size - 1 }
+  }
+
+  const start = Number(startRaw)
+  if (!Number.isFinite(start)) return null
+
+  // start beyond EOF is unsatisfiable.
+  if (start >= size) return 'unsatisfiable'
+
+  let end: number
+  if (endRaw === '') {
+    end = size - 1 // open-ended → EOF
+  } else {
+    end = Number(endRaw)
+    if (!Number.isFinite(end)) return null
+    if (end < start) return 'unsatisfiable'
+    end = Math.min(end, size - 1) // clamp to EOF
+  }
+
+  return { start, end }
+}
 
 /**
  * Serve a single file from a session's sandboxed workspace directory.
@@ -49,6 +127,7 @@ const MAX_FILE_BYTES = 50 * 1024 * 1024
 export async function handlePreviewFs(
   url: URL,
   resolveWorkDir: ResolveWorkDir,
+  reqHeaders?: Headers,
 ): Promise<Response> {
   if (!url.pathname.startsWith(PREFIX)) {
     return new Response('forbidden', { status: 403 })
@@ -79,12 +158,48 @@ export async function handlePreviewFs(
   if (!stat.isFile()) return new Response('not a file', { status: 404 })
   if (stat.size > MAX_FILE_BYTES) return new Response('too large', { status: 413 })
 
-  const data = fs.readFileSync(target)
-  return new Response(data, {
+  const size = stat.size
+  const contentType = contentTypeForPath(target)
+  // Stream straight from disk via Bun.file — never buffer whole media into
+  // memory. Bun's file blob is an acceptable Response body.
+  const file = Bun.file(target)
+
+  const range = parseRange(reqHeaders?.get('range'), size)
+
+  if (range === 'unsatisfiable') {
+    return new Response('range not satisfiable', {
+      status: 416,
+      headers: {
+        'Content-Range': `bytes */${size}`,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'no-cache',
+      },
+    })
+  }
+
+  if (range) {
+    const { start, end } = range
+    // `slice(start, end + 1)` — Bun's slice end is exclusive, range end is
+    // inclusive — streams just the requested window.
+    return new Response(file.slice(start, end + 1), {
+      status: 206,
+      headers: {
+        'Content-Type': contentType,
+        'Content-Range': `bytes ${start}-${end}/${size}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': String(end - start + 1),
+        'Cache-Control': 'no-cache',
+      },
+    })
+  }
+
+  // No (or unparseable) Range header → stream the whole file as 200.
+  return new Response(file, {
     status: 200,
     headers: {
-      'Content-Type': contentTypeForPath(target),
-      'Content-Length': String(stat.size),
+      'Content-Type': contentType,
+      'Content-Length': String(size),
+      'Accept-Ranges': 'bytes',
       'Cache-Control': 'no-cache',
     },
   })

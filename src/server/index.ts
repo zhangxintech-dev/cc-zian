@@ -296,10 +296,13 @@ export function startServer(port = PORT, host = HOST) {
             }
           }
 
-          const response = await handlePreviewFs(url, async (sessionId) =>
-            conversationService.getSessionWorkDir(sessionId) ||
-            (await sessionService.getSessionWorkDir(sessionId)) ||
-            null,
+          const response = await handlePreviewFs(
+            url,
+            async (sessionId) =>
+              conversationService.getSessionWorkDir(sessionId) ||
+              (await sessionService.getSessionWorkDir(sessionId)) ||
+              null,
+            req.headers,
           )
           return withCors(response, cors)
         }
