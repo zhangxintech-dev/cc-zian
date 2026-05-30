@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { handlePreviewLink, type PreviewLinkDeps } from './handlePreviewLink'
+import {
+  handlePreviewLink,
+  isAbsoluteLocalPath,
+  localFileUrl,
+  previewFsUrl,
+  type PreviewLinkDeps,
+} from './handlePreviewLink'
 
 function makeDeps(overrides?: Partial<PreviewLinkDeps>): PreviewLinkDeps {
   return {
@@ -22,19 +28,40 @@ describe('handlePreviewLink', () => {
     expect(deps.openExternal).not.toHaveBeenCalled()
   })
 
-  it('routes absolute html file paths to openBrowser with the preview-fs url', () => {
+  it('routes absolute html file paths to openBrowser with the local-file url', () => {
     const deps = makeDeps()
     const handled = handlePreviewLink('/Users/x/index.html', deps)
     expect(handled).toBe(true)
-    // previewFsUrl preserves the leading slash, yielding an intentional `//`
-    // between <sessionId> and the absolute path so the server resolves it as
-    // an absolute-within-workspace path.
+    // Absolute paths may live outside the session workspace, so they go through
+    // the $HOME-sandboxed /local-file route, NOT /preview-fs.
     expect(deps.openBrowser).toHaveBeenCalledWith(
       's1',
-      'http://127.0.0.1:8787/preview-fs/s1//Users/x/index.html',
+      'http://127.0.0.1:8787/local-file/Users/x/index.html',
     )
     expect(deps.openFilePreview).not.toHaveBeenCalled()
     expect(deps.openExternal).not.toHaveBeenCalled()
+  })
+
+  it('routes file:// urls to openBrowser with the local-file url', () => {
+    const deps = makeDeps()
+    const handled = handlePreviewLink('file:///Users/x/page.html', deps)
+    expect(handled).toBe(true)
+    expect(deps.openBrowser).toHaveBeenCalledWith(
+      's1',
+      'http://127.0.0.1:8787/local-file/Users/x/page.html',
+    )
+  })
+
+  it('routes a relative .html file to openBrowser with the preview-fs (workspace) url', () => {
+    const deps = makeDeps()
+    const handled = handlePreviewLink('out/index.html', deps)
+    expect(handled).toBe(true)
+    // Relative → stays workspace-scoped via /preview-fs.
+    expect(deps.openBrowser).toHaveBeenCalledWith(
+      's1',
+      'http://127.0.0.1:8787/preview-fs/s1/out/index.html',
+    )
+    expect(deps.openFilePreview).not.toHaveBeenCalled()
   })
 
   it('routes relative previewable docs to openFilePreview with the relative path', () => {
@@ -62,5 +89,50 @@ describe('handlePreviewLink', () => {
     expect(deps.openBrowser).not.toHaveBeenCalled()
     expect(deps.openFilePreview).not.toHaveBeenCalled()
     expect(deps.openExternal).not.toHaveBeenCalled()
+  })
+})
+
+describe('isAbsoluteLocalPath', () => {
+  it('treats POSIX leading-slash paths as absolute', () => {
+    expect(isAbsoluteLocalPath('/Users/x/page.html')).toBe(true)
+  })
+  it('treats Windows drive paths as absolute (both slash styles)', () => {
+    expect(isAbsoluteLocalPath('C:\\Users\\x\\page.html')).toBe(true)
+    expect(isAbsoluteLocalPath('C:/Users/x/page.html')).toBe(true)
+  })
+  it('treats relative paths as not absolute', () => {
+    expect(isAbsoluteLocalPath('out/index.html')).toBe(false)
+    expect(isAbsoluteLocalPath('./page.html')).toBe(false)
+  })
+})
+
+describe('localFileUrl', () => {
+  it('appends a POSIX absolute path after /local-file, preserving slashes', () => {
+    expect(localFileUrl('http://127.0.0.1:8787', '/Users/x/page.html')).toBe(
+      'http://127.0.0.1:8787/local-file/Users/x/page.html',
+    )
+  })
+  it('encodes spaces/unicode per segment but keeps separators', () => {
+    expect(localFileUrl('http://127.0.0.1:8787', '/Users/x/with space/p.html')).toBe(
+      'http://127.0.0.1:8787/local-file/Users/x/with%20space/p.html',
+    )
+  })
+  it('normalizes Windows backslashes and keeps a leading slash', () => {
+    expect(localFileUrl('http://127.0.0.1:8787', 'C:\\proj\\page.html')).toBe(
+      'http://127.0.0.1:8787/local-file/C%3A/proj/page.html',
+    )
+  })
+  it('trims a trailing slash on the base', () => {
+    expect(localFileUrl('http://127.0.0.1:8787/', '/a/b.html')).toBe(
+      'http://127.0.0.1:8787/local-file/a/b.html',
+    )
+  })
+})
+
+describe('previewFsUrl (unchanged, regression guard)', () => {
+  it('still builds a workspace-scoped preview-fs url for relative paths', () => {
+    expect(previewFsUrl('http://127.0.0.1:8787', 's1', 'out/index.html')).toBe(
+      'http://127.0.0.1:8787/preview-fs/s1/out/index.html',
+    )
   })
 })

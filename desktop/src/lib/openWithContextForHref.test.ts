@@ -6,7 +6,7 @@ vi.mock('./desktopRuntime', () => ({
 }))
 
 import { openWithContextForHref, openWithContextForWorkspaceFile } from './openWithContextForHref'
-import { previewFsUrl } from './handlePreviewLink'
+import { localFileUrl, previewFsUrl } from './handlePreviewLink'
 
 const BASE = 'http://127.0.0.1:4321'
 const SESSION = 's1'
@@ -27,12 +27,12 @@ describe('openWithContextForHref', () => {
     expect(result).toEqual({ kind: 'file', absolutePath: '/w/docs/a.md', relPath: 'docs/a.md', previewable: true })
   })
 
-  it('absolute path in browser-file → inAppBrowserUrl via previewFsUrl', () => {
+  it('absolute path in browser-file → inAppBrowserUrl via localFileUrl ($HOME-sandboxed route)', () => {
     const result = openWithContextForHref('/x/p.html', { sessionId: SESSION, serverBaseUrl: BASE })
     expect(result).toEqual({
       kind: 'file',
       absolutePath: '/x/p.html',
-      inAppBrowserUrl: previewFsUrl(BASE, SESSION, '/x/p.html'),
+      inAppBrowserUrl: localFileUrl(BASE, '/x/p.html'),
     })
   })
 

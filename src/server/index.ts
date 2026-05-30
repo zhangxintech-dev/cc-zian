@@ -16,6 +16,7 @@ import { ProviderService } from './services/providerService.js'
 import { handleHahaOAuthCallback } from './api/haha-oauth.js'
 import { handleHahaOpenAIOAuthCallback } from './api/haha-openai-oauth.js'
 import { handlePreviewFs } from './api/previewFs.js'
+import { handleLocalFile } from './api/localFile.js'
 import { sessionService } from './services/sessionService.js'
 import { conversationService } from './services/conversationService.js'
 import { OPENAI_CODEX_REDIRECT_PATH } from '../services/openaiAuth/client.js'
@@ -304,6 +305,30 @@ export function startServer(port = PORT, host = HOST) {
               null,
             req.headers,
           )
+          return withCors(response, cors)
+        }
+
+        // Local filesystem — serve an ABSOLUTE local file ($HOME/tmp/registered
+        // roots sandbox) so `file://` links / AI-emitted absolute paths open in
+        // the in-app browser. Gated identically to /preview-fs above.
+        if (url.pathname.startsWith('/local-file/')) {
+          if (cors.rejected) {
+            return corsRejectedResponse(cors)
+          }
+
+          if (authRequired) {
+            const authError = await requireH5Token(req)
+            if (authError) {
+              return withCors(authError, cors)
+            }
+          } else if (forceAuth) {
+            const authError = await requireAuth(req)
+            if (authError) {
+              return withCors(authError, cors)
+            }
+          }
+
+          const response = await handleLocalFile(url, req.headers)
           return withCors(response, cors)
         }
 

@@ -149,6 +149,23 @@ export async function handlePreviewFs(
     return new Response('forbidden', { status: 403 })
   }
 
+  return serveFileWithRange(target, reqHeaders)
+}
+
+/**
+ * Stream a single resolved absolute file as an HTTP response, honouring a
+ * `Range` header (206 partial / 416 unsatisfiable) and falling back to a full
+ * 200 otherwise. The body is streamed straight from disk via `Bun.file(...)`,
+ * never buffered into memory, so this is safe for large media.
+ *
+ * Callers are responsible for any path-sandboxing BEFORE invoking this — it
+ * trusts `target` to already be authorised. It returns 404 when the path is
+ * missing or not a regular file, and 413 above {@link MAX_FILE_BYTES}.
+ */
+export async function serveFileWithRange(
+  target: string,
+  reqHeaders?: Headers,
+): Promise<Response> {
   let stat: fs.Stats
   try {
     stat = fs.statSync(target)
